@@ -1,0 +1,296 @@
+{
+  "step": 200,
+  "reason": "SUCCESS",
+  "robot_states": [
+    {
+      "id": 0,
+      "position": [
+        6,
+        21
+      ],
+      "mission": "RESTING",
+      "battery": 79.95000000000114,
+      "carrying": false,
+      "target": [
+        5,
+        21,
+        0
+      ]
+    },
+    {
+      "id": 1,
+      "position": [
+        9,
+        13
+      ],
+      "mission": "RESTING",
+      "battery": 79.90000000000114,
+      "carrying": false,
+      "target": [
+        9,
+        21,
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "position": [
+        13,
+        4
+      ],
+      "mission": "DELIVERY",
+      "battery": 79.90000000000114,
+      "carrying": true,
+      "target": [
+        13,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 3,
+      "position": [
+        8,
+        14
+      ],
+      "mission": "DELIVERY",
+      "battery": 79.90000000000114,
+      "carrying": false,
+      "target": [
+        9,
+        0,
+        0
+      ]
+    }
+  ],
+  "recent_history": {
+    "positions": [
+      [
+        [
+          5,
+          15
+        ],
+        [
+          10,
+          7
+        ],
+        [
+          14,
+          9
+        ],
+        [
+          15,
+          12
+        ]
+      ],
+      [
+        [
+          5,
+          16
+        ],
+        [
+          9,
+          7
+        ],
+        [
+          14,
+          9
+        ],
+        [
+          14,
+          12
+        ]
+      ],
+      [
+        [
+          6,
+          16
+        ],
+        [
+          9,
+          8
+        ],
+        [
+          14,
+          8
+        ],
+        [
+          13,
+          12
+        ]
+      ],
+      [
+        [
+          6,
+          17
+        ],
+        [
+          9,
+          9
+        ],
+        [
+          13,
+          8
+        ],
+        [
+          12,
+          12
+        ]
+      ],
+      [
+        [
+          5,
+          17
+        ],
+        [
+          9,
+          10
+        ],
+        [
+          14,
+          8
+        ],
+        [
+          11,
+          12
+        ]
+      ],
+      [
+        [
+          5,
+          18
+        ],
+        [
+          9,
+          11
+        ],
+        [
+          14,
+          7
+        ],
+        [
+          10,
+          12
+        ]
+      ],
+      [
+        [
+          5,
+          19
+        ],
+        [
+          8,
+          11
+        ],
+        [
+          14,
+          6
+        ],
+        [
+          9,
+          12
+        ]
+      ],
+      [
+        [
+          5,
+          20
+        ],
+        [
+          9,
+          11
+        ],
+        [
+          13,
+          6
+        ],
+        [
+          8,
+          12
+        ]
+      ],
+      [
+        [
+          5,
+          21
+        ],
+        [
+          9,
+          12
+        ],
+        [
+          13,
+          5
+        ],
+        [
+          8,
+          13
+        ]
+      ],
+      [
+        [
+          6,
+          21
+        ],
+        [
+          9,
+          13
+        ],
+        [
+          13,
+          4
+        ],
+        [
+          8,
+          14
+        ]
+      ]
+    ],
+    "missions": [
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY",
+      "RESTING,RESTING,DELIVERY,DELIVERY"
+    ],
+    "deliveries": [
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "battery_levels": [
+      80.80000000000109,
+      80.7000000000011,
+      80.6000000000011,
+      80.50000000000111,
+      80.40000000000111,
+      80.30000000000112,
+      80.20000000000113,
+      80.10000000000113,
+      80.00000000000114,
+      79.90000000000114
+    ]
+  }
+}

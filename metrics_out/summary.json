@@ -1,0 +1,20 @@
+{
+  "total_steps": 55,
+  "episodes": 1000,
+  "final_epsilon": 0.05000085,
+  "totals": {
+    "deliveries": 5,
+    "pickups": 5,
+    "conflicts": 0,
+    "moves": 210,
+    "waits": 0,
+    "recharges": 0,
+    "pickup_opportunities": 5,
+    "pickup_missed": 0,
+    "drop_opportunities": 5,
+    "drop_missed": 0,
+    "bumps": 0,
+    "forced_waits": 0
+  },
+  "total_reward_all": 207.39999999999978
+}

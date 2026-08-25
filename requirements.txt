@@ -1,0 +1,5 @@
+numpy>=1.24
+agentpy>=0.1.0
+matplotlib>=3.5.0
+uvicorn>=0.18.0
+fastapi>=0.95,<0.100
