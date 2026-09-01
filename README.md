@@ -13,6 +13,12 @@ A Python project for training and visualizing a warehouse with multiple robots u
 - Unity integration via FastAPI: `/start`, `/step?steps=N`, `/state` returning a compact JSON envelope.
 - Weights persistence: current and best models saved incrementally.
 
+## The hard part
+
+Training a fleet of robots to pick up and drop off boxes without deadlocking each other is the interesting bit. I used Q-learning with linear function approximation — each action scores a weighted sum of hand-built features (distance to the box, whether I'm carrying, heading, battery) instead of a giant state table — and then spent most of the effort on the *conflict* problem: when five robots converge on one drop zone, something has to yield. I built a multi-pass resolver that handles many-to-one merges, occupant-stays and head-on swaps, then added stuck detection and a safe-zone system so a robot that gets boxed in frees itself instead of training forever.
+
+The result is a real, tunable sim you can watch: deliveries converge over 1,000 episodes, the learned policy is served to an external client over FastAPI (`/start`, `/step`, `/state`), and the analysis scripts in this repo show the win-rate and learning curves that actually happened.
+
 ## Project layout
 ```
 warehouse.py          # Environment, RL, training helpers, serializer
