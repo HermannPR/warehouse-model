@@ -4,6 +4,10 @@
 
 A Python project for training and visualizing a warehouse with multiple robots using Q‑learning (linear function approximation). Includes a Matplotlib viewer, CSV‑driven training metrics and charts, and a lightweight FastAPI server for Unity/clients.
 
+## The problem
+
+Each robot has a mission — pick up a box, deliver it, recharge — but several robots share the same corridors. The interesting part isn't a single robot navigating from A to B, it's deciding **who goes where** when they converge on the same shelf or collide head-on. I trained a shared Q‑learning policy over the whole team, then layered deterministic conflict-resolution rules on top so the learned mover stays physically consistent.
+
 ## Features
 - Multi‑robot environment with missions: PICKUP → DELIVERY, RESTING, RECHARGE.
 - Q‑learning with linear features (per‑action φ), γ‑discount, ε‑greedy with fast exponential decay.
