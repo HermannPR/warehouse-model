@@ -42,3 +42,16 @@ R_LOW_BATT = -0.1
 R_PROXIMITY_BONUS = 0.5  # Bonus when within 3 cells of target
 R_ADJACENT_BONUS = 1.0   # Extra bonus when adjacent to target
 R_INEFFICIENCY_PENALTY = 0.2  # Penalty for moving away from target
+
+# Coordination (see blackboard.py / auction.py)
+# ALLOCATION_MODE: "greedy"  = nearest idle robot takes each pending mission (original behavior)
+#                  "auction" = Contract-Net auction over tasks posted on the blackboard
+# CONFLICT_MODE:   "legacy"     = original multi-pass resolver
+#                  "blackboard" = next-cell reservations on the blackboard
+# Both can be overridden per model: Warehouse(parameters={"allocation_mode": ..., "conflict_mode": ...})
+ALLOCATION_MODE = "greedy"
+CONFLICT_MODE = "legacy"
+BID_W_CONGESTION = 2.0   # cost per unit of congestion heat on the planned path
+BID_W_CROWDING = 3.0     # cost per other robot already near the box
+BID_W_BATTERY = 0.2      # cost per battery point below 100
+STUCK_RELEASE_STEPS = 15 # claimed task is released if its robot has not moved for this many ticks

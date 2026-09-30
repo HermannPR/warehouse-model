@@ -15,8 +15,11 @@ from config_constants import (
     CYCLE_DELIVERIES_TARGET, ACTIONS, MOVE_TO_HEADING, ACTION_TO_UNITY,
     ALPHA, GAMMA, EPSILON_START, EPSILON_END, DECAY_STEPS, EPSILON_TAU,
     FEAT_PER_ACT, N_FEATURES, R_STEP, R_SHAPING_K, R_PICKUP, R_DROP, R_RECHARGE,
-    R_BUMP, R_CONFLICT, LOW_BATT_THR, R_LOW_BATT, R_PROXIMITY_BONUS, R_ADJACENT_BONUS, R_INEFFICIENCY_PENALTY
+    R_BUMP, R_CONFLICT, LOW_BATT_THR, R_LOW_BATT, R_PROXIMITY_BONUS, R_ADJACENT_BONUS, R_INEFFICIENCY_PENALTY,
+    ALLOCATION_MODE, CONFLICT_MODE, BID_W_CONGESTION, BID_W_CROWDING, BID_W_BATTERY, STUCK_RELEASE_STEPS
 )
+from blackboard import Blackboard, CLAIMED
+from auction import Auctioneer, INF
 
 ## (legacy constant block folded into config_constants.py)
 
@@ -1385,6 +1388,10 @@ class Robot(ap.Agent):
             
             # Apply behavioral adaptations instead of resetting
             if self.action_success_counter >= 15:
+                try:
+                    self.model.stats["stuck_events"] += 1
+                except Exception:
+                    pass
                 self.model.analyze_failure_pattern(self)
                 
                 # Smart mission reassignment based on behavior mode
@@ -2004,6 +2011,20 @@ class Warehouse(ap.Model):
         self.action_events = []
         # Backward-compat for external scripts that expect _stats
         self._stats = self.stats
+        # Coordination metrics (used by benchmark_allocation.py)
+        for k in ("stuck_events", "collisions", "swaps_through", "idle_robot_steps",
+                  "valid_pickups", "ghost_pickups", "valid_deliveries", "reroutes",
+                  "duplicate_assignments", "assignments"):
+            self.stats[k] = 0
+
+        # Coordination layer: blackboard (always kept up to date) + optional auction
+        try:
+            params = getattr(self, 'p', {}) or {}
+            self.allocation_mode = str(params.get('allocation_mode', ALLOCATION_MODE))
+            self.conflict_mode = str(params.get('conflict_mode', CONFLICT_MODE))
+        except Exception:
+            self.allocation_mode, self.conflict_mode = ALLOCATION_MODE, CONFLICT_MODE
+        self._reset_coordination()
 
         # Sembrar misiones aleatorias para pruebas
         try:
@@ -2023,6 +2044,7 @@ class Warehouse(ap.Model):
         # Clear mission state
         self.current_missions = {}
         self.pending_missions = []
+        self._reset_coordination()
         self.intended = {}
         self.forced_wait_by_conflict = set()
 
@@ -2105,10 +2127,26 @@ class Warehouse(ap.Model):
         """Handle visual pickup - mark box as picked and schedule respawn."""
         if isinstance(box_location, (list, tuple)) and len(box_location) >= 2:
             box_key = (box_location[0], box_location[1])
+            # A pickup is only "real" if a box is still at that cell and nobody holds it.
+            # With duplicated greedy missions a robot can reach a stale location and
+            # "pick" a box another robot already took (ghost pickup).
+            exists = any(isinstance(b, dict) and isinstance(b.get('pos'), (list, tuple))
+                         and tuple(b['pos'][:2]) == tuple(box_key) for b in self.boxes)
+            real = exists and box_key not in self.picked_boxes
+            robot.holding_real_box = bool(real)
+            self.stats["valid_pickups" if real else "ghost_pickups"] += 1
             self.picked_boxes.add(box_key)
-    
+            if self.allocation_mode == "auction":
+                self.blackboard.mark_picked(robot.id)
+
     def handle_box_delivery(self, robot, box_location):
         """Handle delivery - optionally respawn the box at a new location."""
+        if getattr(robot, 'holding_real_box', False):
+            self.stats["valid_deliveries"] += 1
+            robot.holding_real_box = False
+        if self.allocation_mode == "auction":
+            self.blackboard.complete(robot.id)
+            self.auctioneer.deadlines.pop(getattr(robot, '_task_id', None), None)
         # Skip delivery if training episode is already terminated
         if getattr(self, 'episode_terminated', False):
             return
@@ -2237,6 +2275,9 @@ class Warehouse(ap.Model):
         Elegible: mission None/RESTING, battery >=15 (else reroute to recharge), correct type if level requires.
         No random choice: determinista por orden de lista de misiones.
         """
+        if getattr(self, 'allocation_mode', 'greedy') == "auction":
+            self.auction_assign()
+            return
         if not self.pending_missions:
             return
         remaining = []
@@ -2289,6 +2330,13 @@ class Warehouse(ap.Model):
                 remaining.append((bx_loc, tgt, miss))
                 continue
             best = min(candidates, key=lambda r: manhattan(r.position, bx_xy))
+            # Diagnostics: the greedy queue can hold the same box twice
+            try:
+                if any(tuple(m.get("box_location", ())[:2]) == tuple(bx_xy)
+                       for rid, m in self.current_missions.items() if rid != best.id):
+                    self.stats["duplicate_assignments"] += 1
+            except Exception:
+                pass
             best.mission = miss
             
             # Assign unique drop point for this robot
@@ -2323,6 +2371,10 @@ class Warehouse(ap.Model):
         
         # Initialize episode termination flag for training
         self.episode_terminated = False
+        try:
+            self._reset_coordination()
+        except Exception:
+            pass
         
         # Track episode deliveries for training mode
         if not hasattr(self, 'episode_delivery_count'):
@@ -2416,6 +2468,11 @@ class Warehouse(ap.Model):
             return False
 
     def seed_random_missions(self, n:int=3):
+        if getattr(self, 'allocation_mode', 'greedy') == "auction":
+            # Auction mode: one task per box on the blackboard, no duplicates
+            self.sync_tasks_to_blackboard()
+            self.auction_assign()
+            return
         # Filter boxes based on available robot capabilities with new level system
         locs = []
         # Get all access levels available from current robots
@@ -2701,14 +2758,185 @@ class Warehouse(ap.Model):
             pass
         return box_locations
 
+    # ================= COORDINATION: BLACKBOARD + AUCTION =================
+    def _reset_coordination(self):
+        self.blackboard = Blackboard()
+        self.auctioneer = Auctioneer(self.blackboard, cost_fn=self.bid_cost,
+                                     eligible_fn=self.can_bid_for)
+        self._last_move_step = {}
+
+    def _robot_by_id(self, rid):
+        for rb in self.robots:
+            if rb.id == rid:
+                return rb
+        return None
+
+    def sync_tasks_to_blackboard(self):
+        """Post one OPEN task per box that is on the map and not already tracked."""
+        levels = set()
+        for rb in self.robots:
+            levels.update(getattr(rb, 'access_levels', [1, 2]))
+        for b in self.boxes:
+            pos = b.get('pos') if isinstance(b, dict) else None
+            if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+                continue
+            level = int(pos[2]) if len(pos) >= 3 and pos[2] is not None else 1
+            if level not in levels:
+                continue
+            box = (int(pos[0]), int(pos[1]), level)
+            if not self.box_is_accessible(box):
+                continue
+            if self.blackboard.active_task_for_cell(box[:2]) is None:
+                self.blackboard.post_task(box)
+
+    def can_bid_for(self, robot, task):
+        return task.level in getattr(robot, 'access_levels', [1, 2])
+
+    def bid_cost(self, robot, task):
+        """Bid = A* path length to the box + congestion on that path
+        + crowding near the box + battery penalty (all read from the blackboard)."""
+        goals = approach_cells_to_box(self, task.cell, robot)
+        if not goals:
+            return INF
+        start = tuple(robot.position)
+        best_len, best_path = INF, []
+        for g in sorted(goals, key=lambda c: manhattan(start, c))[:2]:
+            if tuple(g) == start:
+                best_len, best_path = 0, []
+                break
+            path = find_path_around_obstacles(self, start, g)
+            if path and len(path) < best_len:
+                best_len, best_path = len(path), path
+        if best_len == INF:
+            return INF
+        bb = self.blackboard
+        congestion = sum(bb.congestion_at(c) for c in best_path)
+        crowding = sum(1 for rid, p in bb.robot_positions.items()
+                       if rid != robot.id and manhattan(p, task.cell) <= 3)
+        battery = max(0.0, 100.0 - float(getattr(robot, 'battery', 100)))
+        return (best_len + BID_W_CONGESTION * congestion
+                + BID_W_CROWDING * crowding + BID_W_BATTERY * battery)
+
+    def release_task(self, task, reason):
+        rb = self._robot_by_id(task.claimed_by)
+        self.auctioneer.release(task, reason)
+        if rb is not None and not rb.carrying:
+            rb.mission = "RESTING"
+            rp = self.closest_pick(rb.position, self.resting_points, self.resting_point_free)
+            rb.target = (rp[0], rp[1], 0) if rp is not None else None
+            rb.box_location = None
+            self.current_missions.pop(rb.id, None)
+            self.release_drop_point(rb.id)
+
+    def auction_assign(self):
+        """One auction round: release failed tasks, then announce / bid / award."""
+        bb = self.blackboard
+        step = self.stats.get("step", 0)
+        for rb in self.robots:
+            bb.update_robot(rb.id, rb.position)
+        # Failure detection -> re-auction
+        for task in list(bb.claimed_tasks()):
+            if task.status != CLAIMED:
+                continue
+            rb = self._robot_by_id(task.claimed_by)
+            if rb is None or rb.mission != "DELIVERY":
+                # adaptive behavior or stuck recovery dropped the mission
+                self.release_task(task, "stuck")
+            elif step - self._last_move_step.get(rb.id, step) >= STUCK_RELEASE_STEPS:
+                self._last_move_step[rb.id] = step
+                self.release_task(task, "stuck")
+        for task in self.auctioneer.expired():
+            self.release_task(task, "timeout")
+        # Robots left in a side mission without a task go back to the market
+        for rb in self.robots:
+            if (not rb.carrying and rb.mission not in (None, "RESTING", "RECHARGE", "DELIVERY")
+                    and bb.task_of(rb.id) is None):
+                rb.mission = "RESTING"
+                rb.target = None
+        idle = []
+        for rb in self.robots:
+            if rb.carrying or rb.mission not in (None, "RESTING") or bb.task_of(rb.id) is not None:
+                continue
+            if rb.battery < 15:
+                chg = self.closest_pick(rb.position, self.recharge_points, self.recharge_point_free)
+                if chg is not None:
+                    rb.mission = "RECHARGE"
+                    rb.target = (chg[0], chg[1], 0)
+                continue
+            idle.append(rb)
+        if not idle or not bb.open_tasks():
+            return
+        for task, rb, cost in self.auctioneer.run_round(idle):
+            rb.mission = "DELIVERY"
+            dp = self.get_available_drop_point(rb.id)
+            rb.target = (dp[0], dp[1], 0) if dp is not None else None
+            rb.box_location = task.box
+            rb._task_id = task.id
+            self._last_move_step[rb.id] = step
+            self.current_missions[rb.id] = {"box_location": task.box, "target": rb.target,
+                                            "mission": "DELIVERY", "task_id": task.id}
+        bb.prune_done()
+
+    def resolve_conflicts_blackboard(self):
+        """Conflict resolution through next-cell reservations on the blackboard."""
+        self.forced_wait_by_conflict = set()
+        proposals, priority, alternatives, alt_action = {}, {}, {}, {}
+        for rb in self.robots:
+            cur = tuple(rb.position)
+            proposals[rb.id] = (cur, tuple(self._dest_after(rb)))
+            priority[rb.id] = self.get_robot_priority(rb)
+            alts = self.get_alternative_moves(rb)[:2]
+            alternatives[rb.id] = [tuple(d) for _, d in alts]
+            alt_action[rb.id] = {tuple(d): a for a, d in alts}
+        granted = self.blackboard.resolve_moves(proposals, priority, alternatives)
+        for rb in self.robots:
+            cur, want = proposals[rb.id]
+            got = granted[rb.id]
+            if got == want:
+                continue
+            if got == cur:
+                rb.proposal = "WAIT"
+                self.forced_wait_by_conflict.add(rb.id)
+            else:
+                rb.proposal = alt_action[rb.id][got]
+                self.stats["reroutes"] += 1
+        self.stats["conflicts"] += len(self.forced_wait_by_conflict)
+        self._forced_waits_this_step = len(self.forced_wait_by_conflict)
+
+    def _record_coordination_metrics(self, prev_positions):
+        step = self.stats.get("step", 0)
+        positions = {rb.id: tuple(rb.position) for rb in self.robots}
+        # collisions: two robots ending in the same cell
+        self.stats["collisions"] += len(positions) - len(set(positions.values()))
+        # swaps: two robots passing through each other
+        ids = list(positions)
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                a, b = ids[i], ids[j]
+                if (positions[a] != prev_positions[a] and positions[a] == prev_positions[b]
+                        and positions[b] == prev_positions[a]):
+                    self.stats["swaps_through"] += 1
+        for rb in self.robots:
+            if positions[rb.id] != prev_positions[rb.id]:
+                self._last_move_step[rb.id] = step
+            self.blackboard.update_robot(rb.id, positions[rb.id])
+            if not rb.carrying and rb.mission != "DELIVERY":
+                self.stats["idle_robot_steps"] += 1
+
     # ================= FIXED STEP PIPELINE (CLEAN REPLACEMENT) =================
     def step(self):
         """Advance one simulation tick (planning -> conflict resolution -> action -> bookkeeping)."""
         self._update_epsilon()
         self._reset_step_counters()
+        self.blackboard.tick(self.stats["step"])
         self._phase_plan()
-        self.resolve_conflicts()
+        if self.conflict_mode == "blackboard":
+            self.resolve_conflicts_blackboard()
+        else:
+            self.resolve_conflicts()
+        prev_positions = {rb.id: tuple(rb.position) for rb in self.robots}
         self._phase_act()
+        self._record_coordination_metrics(prev_positions)
         self._post_step_updates()
 
     def resolve_conflicts(self, max_passes=3):
@@ -3028,6 +3256,20 @@ class Warehouse(ap.Model):
             "boxes": boxes_json,
             "actions": actions_json,
         }
+
+        # Additive fields (existing keys unchanged): coordination layer for the Unity HUD
+        try:
+            bb = self.blackboard
+            for rj in robots_json:
+                t = bb.task_of(rj["id"])
+                rj["task_id"] = t.id if t is not None else None
+            state["coordination"] = {
+                "allocation_mode": self.allocation_mode,
+                "conflict_mode": self.conflict_mode,
+                "blackboard": bb.snapshot(),
+            }
+        except Exception:
+            pass
 
         # Full envelope
         envelope = {
