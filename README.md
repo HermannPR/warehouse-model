@@ -1,17 +1,34 @@
 # Warehouse Multi‑Robot RL Simulation
 
 <p><img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" height="20" alt="Python"> <img src="https://img.shields.io/badge/Reinforcement_Learning-FF6F00?style=flat-square" height="20" alt="Reinforcement Learning"> <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" height="20" alt="FastAPI"></p>
+**Multi-robot warehouse simulation where a shared Q-learning policy learns to pick up and deliver boxes, with deterministic conflict resolution to keep robots from colliding or deadlocking.**
+
+**Author:** [Hermann Pauwells Rivera](https://hermannpr.github.io/) · Tecnológico de Monterrey, 2024 · **Stack:** Python, AgentPy, NumPy, Matplotlib, FastAPI (Unity client)
+
+![Delivery win rate over training](docs/training_winrate_final.png)
+
+```mermaid
+flowchart LR
+  L[layout.json<br/>tilemap, racks, boxes] --> W[warehouse.py<br/>AgentPy model + robots]
+  W --> Q[Q-learning with<br/>linear features]
+  Q --> C[multi-pass<br/>conflict resolver]
+  C --> W
+  W --> T[train.py<br/>metrics CSV + charts]
+  W --> V[visualize.py<br/>Matplotlib HUD]
+  W --> A[unity_api.py<br/>FastAPI /start /step /state] --> U[Unity 3D client<br/>separate project]
+```
+
 
 A Python project for training and visualizing a warehouse with multiple robots using Q‑learning (linear function approximation). Includes a Matplotlib viewer, CSV‑driven training metrics and charts, and a lightweight FastAPI server for Unity/clients.
 
 ## The problem
 
-Each robot has a mission — pick up a box, deliver it, recharge — but several robots share the same corridors. The interesting part isn't a single robot navigating from A to B, it's deciding **who goes where** when they converge on the same shelf or collide head-on. I trained a shared Q‑learning policy over the whole team, then layered deterministic conflict-resolution rules on top so the learned mover stays physically consistent.
+Each robot has a mission (pick up a box, deliver it, recharge), but several robots share the same corridors. The interesting part isn't a single robot navigating from A to B, it's deciding **who goes where** when they converge on the same shelf or collide head-on. I trained a shared Q‑learning policy over the whole team, then layered deterministic conflict-resolution rules on top so the learned mover stays physically consistent.
 
 ## Features
 - Multi‑robot environment with missions: PICKUP → DELIVERY, RESTING, RECHARGE.
 - Q‑learning with linear features (per‑action φ), γ‑discount, ε‑greedy with fast exponential decay.
-- Robust multi‑pass conflict resolution (many‑to‑one merges, occupant‑stays, head‑on swaps).
+- Multi‑pass conflict resolution (many‑to‑one merges, occupant‑stays, head‑on swaps).
 - Matplotlib visualization with HUD, mission rings, carrying indicator, conflict WAIT highlight.
 - CSV metrics export and non‑blocking plotting; single image of key charts.
 - Unity integration via FastAPI: `/start`, `/step?steps=N`, `/state` returning a compact JSON envelope.
@@ -19,7 +36,7 @@ Each robot has a mission — pick up a box, deliver it, recharge — but several
 
 ## The hard part
 
-Training a fleet of robots to pick up and drop off boxes without deadlocking each other is the interesting bit. I used Q-learning with linear function approximation — each action scores a weighted sum of hand-built features (distance to the box, whether I'm carrying, heading, battery) instead of a giant state table — and then spent most of the effort on the *conflict* problem: when five robots converge on one drop zone, something has to yield. I built a multi-pass resolver that handles many-to-one merges, occupant-stays and head-on swaps, then added stuck detection and a safe-zone system so a robot that gets boxed in frees itself instead of training forever.
+Training a fleet of robots to pick up and drop off boxes without deadlocking each other is the interesting bit. I used Q-learning with linear function approximation: each action scores a weighted sum of hand-built features (distance to the box, whether I'm carrying, heading, battery) instead of a giant state table. Then I spent most of the effort on the *conflict* problem: when five robots converge on one drop zone, something has to yield. I built a multi-pass resolver that handles many-to-one merges, occupant-stays and head-on swaps, then added stuck detection and a safe-zone system so a robot that gets boxed in frees itself instead of training forever.
 
 The result is a real, tunable sim you can watch: deliveries converge over 1,000 episodes, the learned policy is served to an external client over FastAPI (`/start`, `/step`, `/state`), and the analysis scripts in this repo show the win-rate and learning curves that actually happened.
 
@@ -115,9 +132,9 @@ Start the API:
 python -m uvicorn unity_api:app --host 127.0.0.1 --port 8000
 ```
 Endpoints:
-- `POST /start` — initialize the model (loads config, enables cycle reset, low epsilon for eval)
-- `POST /step?steps=N` — advance N ticks; returns state envelope
-- `GET /state` — return current envelope without stepping
+- `POST /start`: initialize the model (loads config, enables cycle reset, low epsilon for eval)
+- `POST /step?steps=N`: advance N ticks; returns state envelope
+- `GET /state`: return current envelope without stepping
 
 Envelope (abbrev):
 ```json
