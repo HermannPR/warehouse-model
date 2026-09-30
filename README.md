@@ -29,6 +29,9 @@ Each robot has a mission (pick up a box, deliver it, recharge), but several robo
 - Multi‑robot environment with missions: PICKUP → DELIVERY, RESTING, RECHARGE.
 - Q‑learning with linear features (per‑action φ), γ‑discount, ε‑greedy with fast exponential decay.
 - Multi‑pass conflict resolution (many‑to‑one merges, occupant‑stays, head‑on swaps).
+- Blackboard coordination layer (`blackboard.py`): shared task board, robot positions/intents, next‑cell reservations, congestion map.
+- Contract‑Net task auctions (`auction.py`): robots bid with A* path cost + congestion + crowding + battery; lowest bid wins; re‑auction on timeout or stuck robot.
+- Allocation benchmark (`benchmark_allocation.py`) comparing greedy vs auction on seeded episodes, plus pytest suite in `tests/`.
 - Matplotlib visualization with HUD, mission rings, carrying indicator, conflict WAIT highlight.
 - CSV metrics export and non‑blocking plotting; single image of key charts.
 - Unity integration via FastAPI: `/start`, `/step?steps=N`, `/state` returning a compact JSON envelope.
@@ -40,9 +43,64 @@ Training a fleet of robots to pick up and drop off boxes without deadlocking eac
 
 The result is a real, tunable sim you can watch: deliveries converge over 1,000 episodes, the learned policy is served to an external client over FastAPI (`/start`, `/step`, `/state`), and the analysis scripts in this repo show the win-rate and learning curves that actually happened.
 
+## Coordinación: Blackboard + subastas de tareas
+
+Q-learning decide **cómo** se mueve cada robot. Encima hay una capa de coordinación que decide **qué** caja toma cada robot y **quién** entra primero a una celda disputada. Los agentes no se hablan entre sí: todo pasa por un blackboard compartido.
+
+```mermaid
+flowchart LR
+  B[(Blackboard<br/>tareas, posiciones,<br/>intenciones, reservas,<br/>congestión, entregas)]
+  S[sync_tasks_to_blackboard<br/>1 tarea por caja] -->|post OPEN| B
+  B -->|anuncio| A[Auctioneer<br/>Contract-Net]
+  R1[robot libre] -->|puja = A* + congestión<br/>+ cercanía + batería| A
+  R2[robot libre] -->|puja| A
+  A -->|gana la puja más baja<br/>CLAIMED| B
+  B -->|tarea asignada| Q[Q-learning<br/>propone movimiento]
+  Q -->|siguiente celda| X[resolve_moves<br/>reservas, swaps]
+  X -->|WAIT o desvío| Q
+  X --> B
+  T[timeout o robot atascado] -->|release + re-subasta| B
+```
+
+**Cómo funciona**
+
+- `blackboard.py`: guarda las tareas (`OPEN → ANNOUNCED → CLAIMED → PICKED → DONE`), la posición e intención de cada robot, las reservas de celda del siguiente tick, un mapa de congestión que decae con el tiempo y las entregas por robot. No depende de agentpy, así que se prueba aislado.
+- `auction.py`: en cada tick con tareas abiertas y robots libres, el subastador anuncia las tareas (la más antigua primero). Cada robot elegible (nivel de rack compatible, batería suficiente) puja con `longitud de ruta A* + 2·congestión en la ruta + 3·robots cerca de la caja + 0.2·batería faltante`. Gana la puja más baja y ese robot sale de la ronda. Si no recoge la caja antes de su plazo (`40 + 3·costo` ticks), si deja de moverse 15 ticks o si pierde la misión, la tarea se libera y se vuelve a subastar excluyendo al robot que falló.
+- Conflictos por reservas (`conflict_mode="blackboard"`): el robot que se queda quieto reserva su celda primero, los que se mueven reservan en orden de prioridad (carga, batería), se bloquean los swaps de frente y el perdedor intenta un desvío lateral antes de esperar. Se itera hasta un punto fijo, así que una espera en cadena también se respeta.
+- Todo se configura con `ALLOCATION_MODE` / `CONFLICT_MODE` en `config_constants.py` o por modelo: `Warehouse(parameters={"allocation_mode": "auction", "conflict_mode": "blackboard"})`. El valor por defecto sigue siendo el comportamiento original (`greedy` + `legacy`); la API de Unity arranca en `auction` + `blackboard`.
+
+**Benchmark**
+
+```powershell
+python .\benchmark_allocation.py --episodes 20 --steps 400
+```
+
+Corre los mismos episodios con semilla en cada modo, con los mismos pesos entrenados (`weights/W_linear_best.npy`) y epsilon 0.05, y guarda `docs/benchmark_allocation.csv` (por episodio), `docs/benchmark_allocation.md` (tabla) y `docs/benchmark_allocation.png`.
+
+![Benchmark de asignación](docs/benchmark_allocation.png)
+
+20 episodios con semilla por modo, 400 ticks, 4 robots, pesos `W_linear_best.npy`, epsilon 0.05.
+
+| Modo | Entregas válidas / episodio | Ticks por entrega | Recogidas fantasma | Misiones duplicadas | Esperas forzadas por conflicto | Colisiones (misma celda) | Eventos de atasco | Tiempo ocioso (%) | Re-subastas | vs baseline |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | 18.4 ± 2.5 | 24.4 | 1.7 | 6.4 | 0.3 | 0.3 | 0.0 | 20.2 | 0.0 | - |
+| greedy+blackboard | 18.7 ± 2.4 | 23.8 | 1.8 | 6.5 | 0.0 | 0.0 | 0.0 | 20.0 | 0.0 | +1% |
+| auction+legacy | 38.0 ± 2.6 | 10.8 | 0.0 | 0.0 | 0.5 | 0.5 | 0.0 | 2.4 | 2.6 | +106% |
+| auction | 37.9 ± 2.7 | 10.8 | 0.0 | 0.0 | 0.1 | 0.0 | 0.0 | 2.4 | 2.8 | +105% |
+
+"Entregas válidas" solo cuenta cajas que realmente estaban en la celda al recogerlas. Qué muestran los números:
+
+- La subasta duplica las entregas (+105%) y baja el tiempo ocioso de 20% a 2.4%. La mayor parte de la ganancia viene del estado de tareas del blackboard, no del precio de la puja por sí solo: el asignador original llena su cola con cajas al azar, repite la misma caja para dos robots (misiones duplicadas y recogidas fantasma) y deja robots parados cuando la cola solo tiene cajas de un nivel que no pueden alcanzar. Con el blackboard hay una tarea por caja y solo pujan robots compatibles.
+- Las reservas del blackboard no cambian el throughput en este mapa (+1%): con 4 robots en 23×23 los conflictos son raros. Lo que sí hacen es eliminar las colisiones residuales del resolvedor original (robots que terminan en la misma celda).
+- Probado con `pytest tests/` (reservas, swaps, esperas en cadena, ganador de subasta, re-subasta por timeout, episodio corto en ambos modos y contrato de la API).
+
 ## Project layout
 ```
 warehouse.py          # Environment, RL, training helpers, serializer
+blackboard.py         # Shared knowledge store: tasks, intents, reservations, congestion
+auction.py            # Contract-Net auctioneer (announce, bid, award, re-auction)
+benchmark_allocation.py # Greedy vs auction benchmark -> docs/benchmark_allocation.*
+tests/                # pytest suite for blackboard, auction, integration and API
 train.py              # CLI for train/test/visualize, metrics export & charts
 run.py                # Simple menu runner (Windows-friendly)
 unity_api.py          # FastAPI app exposing the model to clients (Unity)
@@ -153,6 +211,12 @@ Envelope (abbrev):
 Notes:
 - `heading`: 0=UP, 1=RIGHT, 2=DOWN, 3=LEFT; `action` aligns with Unity motion verbs.
 - `actions` list contains per‑tick events collected during the last step.
+
+Coordination fields (additive, existing keys unchanged):
+- `POST /start?allocation=auction|greedy&conflict=blackboard|legacy` (defaults: env `WAREHOUSE_ALLOCATION` / `WAREHOUSE_CONFLICT`, else `auction` / `blackboard`).
+- Each robot gets `task_id` (claimed task or `null`).
+- `state.coordination = {allocation_mode, conflict_mode, blackboard}` where `blackboard` has `tasks` (with `status`, `claimed_by` and `bids` per robot), `reservations`, `intents`, `congestion`, `delivered`, `counters` and recent `events`.
+- `GET /blackboard`: full snapshot with the last 50 events.
 
 ## Configuration (`layout.json`)
 Expected fields (minimum):
